@@ -1,6 +1,6 @@
 // ======================================
 // src/socket.js
-// Core realtime socket engine
+// Core realtime socket engine (FINAL)
 // ======================================
 
 import {
@@ -20,7 +20,12 @@ import {
 } from "./matcher.js";
 
 import {
-  incrementChats,
+  userOnline,
+  userOffline,
+  userSearching,
+  userStopSearching,
+  chatStarted,
+  chatEnded,
   getStats,
   logError
 } from "./analytics.js";
@@ -30,7 +35,6 @@ import {
 // ======================================
 
 export function socketHandler(io) {
-
   // 🔐 Protect admin/dashboard socket
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;
@@ -39,27 +43,39 @@ export function socketHandler(io) {
     if (token && token !== process.env.ADMIN_TOKEN) {
       return next(new Error("Unauthorized admin"));
     }
-
     next();
   });
 
   io.on("connection", socket => {
     console.log("🔌 Socket connected:", socket.id);
 
-    // ------------------------------
+    // ----------------------------------
+    // USER CONNECTED
+    // ----------------------------------
+    userOnline();
+
+    io.emit("online", onlineCount());
+
+    // ----------------------------------
     // JOIN RANDOM CHAT
-    // ------------------------------
+    // ----------------------------------
     socket.on("join", data => {
       try {
         addUser(socket.id, data);
+
         setStatus(socket.id, "searching");
         addToQueue(socket.id);
+        userSearching();
 
-        socket.emit("status", "Finding partner...");
+        socket.emit("status", "🔍 Finding partner...");
 
         const match = getMatch();
         if (match) {
           const [u1, u2] = match;
+
+          // Stop searching counters
+          userStopSearching();
+          userStopSearching();
 
           setPartner(u1, u2);
           setPartner(u2, u1);
@@ -67,7 +83,7 @@ export function socketHandler(io) {
           setStatus(u1, "connected");
           setStatus(u2, "connected");
 
-          incrementChats();
+          chatStarted();
 
           const user1 = getUser(u1);
           const user2 = getUser(u2);
@@ -82,16 +98,14 @@ export function socketHandler(io) {
             country: user1.country
           });
         }
-
-        io.emit("online", onlineCount());
       } catch (err) {
         logError(err.message);
       }
     });
 
-    // ------------------------------
+    // ----------------------------------
     // MESSAGE
-    // ------------------------------
+    // ----------------------------------
     socket.on("message", text => {
       try {
         const user = getUser(socket.id);
@@ -107,9 +121,9 @@ export function socketHandler(io) {
       }
     });
 
-    // ------------------------------
-    // SKIP
-    // ------------------------------
+    // ----------------------------------
+    // SKIP PARTNER
+    // ----------------------------------
     socket.on("skip", () => {
       try {
         const user = getUser(socket.id);
@@ -118,30 +132,35 @@ export function socketHandler(io) {
         const partnerId = user.partner;
         const partner = getUser(partnerId);
 
+        // End active chat
         if (partner) {
+          chatEnded();
+
           setPartner(partnerId, null);
           setStatus(partnerId, "searching");
           addToQueue(partnerId);
+          userSearching();
 
           io.to(partnerId).emit(
             "status",
-            "Partner skipped. Finding new..."
+            "⏭ Partner skipped. Finding new..."
           );
         }
 
         setPartner(socket.id, null);
         setStatus(socket.id, "searching");
         addToQueue(socket.id);
+        userSearching();
 
-        socket.emit("status", "Finding new partner...");
+        socket.emit("status", "🔍 Finding new partner...");
       } catch (err) {
         logError(err.message);
       }
     });
 
-    // ------------------------------
+    // ----------------------------------
     // END CHAT
-    // ------------------------------
+    // ----------------------------------
     socket.on("end", () => {
       try {
         const user = getUser(socket.id);
@@ -151,9 +170,12 @@ export function socketHandler(io) {
         const partner = getUser(partnerId);
 
         if (partner) {
+          chatEnded();
+
           setPartner(partnerId, null);
           setStatus(partnerId, "idle");
-          io.to(partnerId).emit("status", "Chat ended");
+
+          io.to(partnerId).emit("status", "❌ Chat ended");
         }
 
         removeFromQueue(socket.id);
@@ -164,18 +186,27 @@ export function socketHandler(io) {
       }
     });
 
-    // ------------------------------
+    // ----------------------------------
     // DISCONNECT
-    // ------------------------------
+    // ----------------------------------
     socket.on("disconnect", () => {
       try {
         const user = getUser(socket.id);
 
+        userOffline();
+
         if (user?.partner) {
+          chatEnded();
+
           io.to(user.partner).emit(
             "status",
-            "Partner disconnected"
+            "⚠️ Partner disconnected"
           );
+
+          setPartner(user.partner, null);
+          setStatus(user.partner, "searching");
+          addToQueue(user.partner);
+          userSearching();
         }
 
         removeFromQueue(socket.id);
@@ -188,18 +219,12 @@ export function socketHandler(io) {
     });
   });
 
-  // ------------------------------
+  // ----------------------------------
   // DASHBOARD STATS (EVERY 2s)
-  // ------------------------------
+  // ----------------------------------
   setInterval(() => {
     try {
-      io.emit(
-        "stats",
-        getStats({
-          onlineUsers: onlineCount(),
-          waitingUsers: waitingCount()
-        })
-      );
+      io.emit("stats", getStats());
     } catch (err) {
       logError(err.message);
     }
