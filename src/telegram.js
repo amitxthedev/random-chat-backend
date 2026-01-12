@@ -1,10 +1,9 @@
 // ======================================
 // src/telegram.js
-// Telegram Random Chat Bot (FINAL STABLE)
+// Telegram Random Chat Bot (FIXED LOGIC)
 // ======================================
 
 import TelegramBot from "node-telegram-bot-api";
-
 import {
   addUser,
   getUser,
@@ -20,38 +19,26 @@ import { addToQueue, getMatch } from "./matcher.js";
 import { incrementChats, logError } from "./analytics.js";
 
 // ======================================
-// CONFIG
-// ======================================
-
 const REQUIRED_CHANNEL = "@onechannelmain";
 const WELCOME_IMAGE =
   "https://cdn.pixabay.com/photo/2023/02/04/17/28/chat-7767693_640.jpg";
 
 // ======================================
-// START BOT
-// ======================================
-
 export function startTelegramBot() {
   if (process.env.NODE_ENV !== "production") {
-    console.log("⚠️ Telegram bot disabled in non-production");
+    console.log("⚠️ Telegram bot disabled (non-production)");
     return;
   }
 
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) {
-    console.error("❌ TELEGRAM_BOT_TOKEN missing");
-    return;
-  }
+  if (!token) return console.error("❌ TOKEN MISSING");
 
   const bot = new TelegramBot(token, { polling: true });
   console.log("🤖 Telegram bot started");
 
   // ======================================
-  // TYPING STATE
-  // ======================================
-
+  // TYPING
   const typing = new Map();
-
   const startTyping = id => {
     if (typing.has(id)) return;
     bot.sendChatAction(id, "typing").catch(() => {});
@@ -62,7 +49,6 @@ export function startTelegramBot() {
       }, 4000)
     );
   };
-
   const stopTyping = id => {
     if (typing.has(id)) clearInterval(typing.get(id));
     typing.delete(id);
@@ -70,30 +56,27 @@ export function startTelegramBot() {
 
   // ======================================
   // HELPERS
-  // ======================================
 
   async function updateStatus(chatId, text) {
-    const user = getUser(chatId);
-
+    const u = getUser(chatId);
     try {
-      if (user?.statusMessageId) {
+      if (u?.statusMessageId) {
         await bot.editMessageText(text, {
           chat_id: chatId,
-          message_id: user.statusMessageId
+          message_id: u.statusMessageId
         });
         return;
       }
     } catch {
-      if (user) user.statusMessageId = null;
+      if (u) u.statusMessageId = null;
     }
-
-    const msg = await bot.sendMessage(chatId, text);
-    setStatusMessageId(chatId, msg.message_id);
+    const m = await bot.sendMessage(chatId, text);
+    setStatusMessageId(chatId, m.message_id);
   }
 
-  async function isUserJoined(userId) {
+  async function isUserJoined(id) {
     try {
-      const m = await bot.getChatMember(REQUIRED_CHANNEL, userId);
+      const m = await bot.getChatMember(REQUIRED_CHANNEL, id);
       return ["member", "administrator", "creator"].includes(m.status);
     } catch {
       return false;
@@ -101,30 +84,24 @@ export function startTelegramBot() {
   }
 
   // ======================================
-  // MATCH ENGINE
-  // ======================================
-
+  // MATCH
   async function tryMatch() {
     const match = getMatch();
     if (!match) return;
 
-    const [u1, u2] = match;
-
-    setPartner(u1, u2);
-    setPartner(u2, u1);
-    setStatus(u1, "connected");
-    setStatus(u2, "connected");
-
+    const [a, b] = match;
+    setPartner(a, b);
+    setPartner(b, a);
+    setStatus(a, "connected");
+    setStatus(b, "connected");
     incrementChats();
 
-    await updateStatus(u1, "✅ Connected with a partner");
-    await updateStatus(u2, "✅ Connected with a partner");
+    await updateStatus(a, "✅ Connected");
+    await updateStatus(b, "✅ Connected");
   }
 
   // ======================================
-  // OFFLINE HANDLER (AUTO)
-  // ======================================
-
+  // 🔴 OFFLINE (AUTO)
   async function handleOffline(offlineId) {
     const u = getUser(offlineId);
     if (!u?.partner) return;
@@ -150,9 +127,7 @@ export function startTelegramBot() {
   }
 
   // ======================================
-  // SKIP HANDLER
-  // ======================================
-
+  // ⏭️ SKIP
   async function handleSkip(userId) {
     const u = getUser(userId);
     if (!u?.partner) return;
@@ -178,9 +153,7 @@ export function startTelegramBot() {
   }
 
   // ======================================
-  // END HANDLER (FINAL STOP)
-  // ======================================
-
+  // ❌ END (FINAL)
   async function handleEnd(enderId) {
     const u = getUser(enderId);
     if (!u) return;
@@ -191,7 +164,9 @@ export function startTelegramBot() {
     if (partnerId) stopTyping(partnerId);
 
     resetChatState(enderId);
-    setStatus(enderId, "idle"); // ❌ DO NOT requeue
+    setStatus(enderId, "idle");
+
+    // ❌ DO NOT REQUEUE ENDER
 
     if (partnerId) {
       resetChatState(partnerId);
@@ -206,7 +181,7 @@ export function startTelegramBot() {
 
     await bot.sendMessage(
       enderId,
-      "🙏 Chat ended.\n\nTap *Start Chat* to chat again.",
+      "Chat ended.\nTap *Start Chat* to begin again.",
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -222,21 +197,23 @@ export function startTelegramBot() {
 
   // ======================================
   // COMMANDS
-  // ======================================
 
   bot.onText(/\/start/, async msg => {
     const joined = await isUserJoined(msg.from.id);
-
     await bot.sendPhoto(msg.chat.id, WELCOME_IMAGE, {
-      caption: "*Welcome to MeowChat 🐱*",
+      caption: "*Welcome to MeowChat*",
       parse_mode: "Markdown",
       reply_markup: {
-        inline_keyboard: joined
-          ? [[{ text: "💬 Start Chat", callback_data: "start_chat" }]]
-          : [[{
-              text: "🔔 Join Channel",
-              url: `https://t.me/${REQUIRED_CHANNEL.replace("@", "")}`
-            }]]
+        inline_keyboard: [
+          joined
+            ? [{ text: "💬 Start Chat", callback_data: "start_chat" }]
+            : [
+                {
+                  text: "🔔 Join Channel",
+                  url: `https://t.me/${REQUIRED_CHANNEL.replace("@", "")}`
+                }
+              ]
+        ]
       }
     });
   });
@@ -251,15 +228,14 @@ export function startTelegramBot() {
       });
     }
 
-    const chatId = q.message.chat.id.toString();
+    const id = q.message.chat.id.toString();
+    addUser(id, { name: q.from.first_name });
 
-    addUser(chatId, { name: q.from.first_name });
+    resetChatState(id);
+    setStatus(id, "searching");
+    addToQueue(id);
 
-    resetChatState(chatId);
-    setStatus(chatId, "searching");
-    addToQueue(chatId);
-
-    await updateStatus(chatId, "🔍 Finding a partner...");
+    await updateStatus(id, "🔍 Finding partner...");
     await tryMatch();
     await bot.answerCallbackQuery(q.id);
   });
@@ -273,29 +249,27 @@ export function startTelegramBot() {
   );
 
   // ======================================
-  // MESSAGE FORWARDING
-  // ======================================
-
+  // MESSAGE
   bot.on("message", async msg => {
     if (!msg.text || msg.text.startsWith("/")) return;
 
-    const chatId = msg.chat.id.toString();
-    const u = getUser(chatId);
+    const id = msg.chat.id.toString();
+    const u = getUser(id);
     if (!u || u.status !== "connected") return;
 
-    const partnerId = u.partner;
-    startTyping(partnerId);
+    const p = u.partner;
+    startTyping(p);
 
     try {
       const sent = await bot.sendMessage(
-        partnerId,
+        p,
         `💬 ${u.name}: ${msg.text}`
       );
-      addChatMessage(partnerId, sent.message_id);
+      addChatMessage(p, sent.message_id);
     } catch {
-      await handleOffline(partnerId);
+      await handleOffline(p);
     } finally {
-      stopTyping(partnerId);
+      stopTyping(p);
     }
   });
 }
