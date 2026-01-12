@@ -1,10 +1,9 @@
 // ======================================
 // src/telegram.js
-// Telegram Random Chat Bot (PRODUCTION SAFE)
+// Telegram Random Chat Bot (FIXED LOGIC)
 // ======================================
 
 import TelegramBot from "node-telegram-bot-api";
-
 import {
   addUser,
   getUser,
@@ -20,156 +19,90 @@ import { addToQueue, getMatch } from "./matcher.js";
 import { incrementChats, logError } from "./analytics.js";
 
 // ======================================
-// CONFIG
-// ======================================
-
 const REQUIRED_CHANNEL = "@onechannelmain";
 const WELCOME_IMAGE =
   "https://cdn.pixabay.com/photo/2023/02/04/17/28/chat-7767693_640.jpg";
 
 // ======================================
-// START BOT (SAFE)
-// ======================================
-
 export function startTelegramBot() {
   if (process.env.NODE_ENV !== "production") {
-    console.log("⚠️ Telegram bot polling disabled (non-production)");
+    console.log("⚠️ Telegram bot disabled (non-production)");
     return;
   }
 
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) {
-    console.error("❌ TELEGRAM_BOT_TOKEN missing");
-    return;
-  }
+  if (!token) return console.error("❌ TOKEN MISSING");
 
-  const bot = new TelegramBot(token, {
-    polling: { interval: 1000, autoStart: true }
-  });
-
-  console.log("🤖 Telegram bot started (polling)");
+  const bot = new TelegramBot(token, { polling: true });
+  console.log("🤖 Telegram bot started");
 
   // ======================================
-  // TYPING STATE
-  // ======================================
-
-  const typingIntervals = new Map();
-
+  // TYPING
+  const typing = new Map();
   const startTyping = id => {
-    if (typingIntervals.has(id)) return;
+    if (typing.has(id)) return;
     bot.sendChatAction(id, "typing").catch(() => {});
-    const i = setInterval(() => {
-      bot.sendChatAction(id, "typing").catch(() => {});
-    }, 4000);
-    typingIntervals.set(id, i);
+    typing.set(
+      id,
+      setInterval(() => {
+        bot.sendChatAction(id, "typing").catch(() => {});
+      }, 4000)
+    );
   };
-
   const stopTyping = id => {
-    const i = typingIntervals.get(id);
-    if (i) clearInterval(i);
-    typingIntervals.delete(id);
+    if (typing.has(id)) clearInterval(typing.get(id));
+    typing.delete(id);
   };
 
   // ======================================
   // HELPERS
-  // ======================================
 
   async function updateStatus(chatId, text) {
-    const user = getUser(chatId);
+    const u = getUser(chatId);
     try {
-      if (user?.statusMessageId) {
+      if (u?.statusMessageId) {
         await bot.editMessageText(text, {
           chat_id: chatId,
-          message_id: user.statusMessageId
+          message_id: u.statusMessageId
         });
         return;
       }
     } catch {
-      if (user) user.statusMessageId = null;
+      if (u) u.statusMessageId = null;
     }
-
-    const msg = await bot.sendMessage(chatId, text);
-    setStatusMessageId(chatId, msg.message_id);
+    const m = await bot.sendMessage(chatId, text);
+    setStatusMessageId(chatId, m.message_id);
   }
 
-  async function resetStatusMessage(chatId) {
-    const user = getUser(chatId);
-    if (!user?.statusMessageId) return;
+  async function isUserJoined(id) {
     try {
-      await bot.deleteMessage(chatId, user.statusMessageId);
-    } catch {}
-    user.statusMessageId = null;
-  }
-
-  async function clearChat(chatId) {
-    const user = getUser(chatId);
-    if (!user) return;
-    for (const id of user.chatMessages) {
-      try {
-        await bot.deleteMessage(chatId, id);
-      } catch {}
-    }
-    clearChatMessages(chatId);
-  }
-
-  async function isUserJoined(userId) {
-    try {
-      const m = await bot.getChatMember(REQUIRED_CHANNEL, userId);
+      const m = await bot.getChatMember(REQUIRED_CHANNEL, id);
       return ["member", "administrator", "creator"].includes(m.status);
     } catch {
       return false;
     }
   }
 
-  async function sendWelcome(chatId, joined) {
-    await bot.sendPhoto(chatId, WELCOME_IMAGE, {
-      caption:
-        "*Welcome to MeowChat 🐱*\n\n" +
-        "• Anonymous 1-to-1 chat\n" +
-        "• Real-time messaging\n" +
-        "• Safe & private\n\n" +
-        "_Join the channel to start chatting_",
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [
-            joined
-              ? { text: "✅ Joined", callback_data: "noop" }
-              : {
-                  text: "🔔 Join Channel",
-                  url: `https://t.me/${REQUIRED_CHANNEL.replace("@", "")}`
-                }
-          ],
-          [{ text: "💬 Start Chat", callback_data: "start_chat" }]
-        ]
-      }
-    });
-  }
-
   // ======================================
-  // MATCH ENGINE
-  // ======================================
-
+  // MATCH
   async function tryMatch() {
     const match = getMatch();
     if (!match) return;
 
-    const [u1, u2] = match;
-    setPartner(u1, u2);
-    setPartner(u2, u1);
-    setStatus(u1, "connected");
-    setStatus(u2, "connected");
+    const [a, b] = match;
+    setPartner(a, b);
+    setPartner(b, a);
+    setStatus(a, "connected");
+    setStatus(b, "connected");
     incrementChats();
 
-    await updateStatus(u1, "✅ Connected with a partner");
-    await updateStatus(u2, "✅ Connected with a partner");
+    await updateStatus(a, "✅ Connected");
+    await updateStatus(b, "✅ Connected");
   }
 
   // ======================================
-  // OFFLINE AUTO END
-  // ======================================
-
-  async function autoEndOfflineUser(offlineId) {
+  // 🔴 OFFLINE (AUTO)
+  async function handleOffline(offlineId) {
     const u = getUser(offlineId);
     if (!u?.partner) return;
 
@@ -185,10 +118,78 @@ export function startTelegramBot() {
     setStatus(partnerId, "searching");
     addToQueue(partnerId);
 
-    await resetStatusMessage(partnerId);
     await updateStatus(
       partnerId,
-      "⚠️ Partner disconnected. Finding new..."
+      "⚠️ Partner went offline. Finding new..."
+    );
+
+    await tryMatch();
+  }
+
+  // ======================================
+  // ⏭️ SKIP
+  async function handleSkip(userId) {
+    const u = getUser(userId);
+    if (!u?.partner) return;
+
+    const partnerId = u.partner;
+
+    stopTyping(userId);
+    stopTyping(partnerId);
+
+    resetChatState(userId);
+    resetChatState(partnerId);
+
+    setStatus(userId, "searching");
+    setStatus(partnerId, "searching");
+
+    addToQueue(userId);
+    addToQueue(partnerId);
+
+    await updateStatus(userId, "⏭ Skipped. Finding new...");
+    await updateStatus(partnerId, "⏭ Partner skipped. Finding new...");
+
+    await tryMatch();
+  }
+
+  // ======================================
+  // ❌ END (FINAL)
+  async function handleEnd(enderId) {
+    const u = getUser(enderId);
+    if (!u) return;
+
+    const partnerId = u.partner;
+
+    stopTyping(enderId);
+    if (partnerId) stopTyping(partnerId);
+
+    resetChatState(enderId);
+    setStatus(enderId, "idle");
+
+    // ❌ DO NOT REQUEUE ENDER
+
+    if (partnerId) {
+      resetChatState(partnerId);
+      setStatus(partnerId, "searching");
+      addToQueue(partnerId);
+
+      await updateStatus(
+        partnerId,
+        "❌ Partner ended the chat. Finding new..."
+      );
+    }
+
+    await bot.sendMessage(
+      enderId,
+      "Chat ended.\nTap *Start Chat* to begin again.",
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "💬 Start Chat", callback_data: "start_chat" }]
+          ]
+        }
+      }
     );
 
     await tryMatch();
@@ -196,71 +197,59 @@ export function startTelegramBot() {
 
   // ======================================
   // COMMANDS
-  // ======================================
 
   bot.onText(/\/start/, async msg => {
     const joined = await isUserJoined(msg.from.id);
-    await sendWelcome(msg.chat.id.toString(), joined);
+    await bot.sendPhoto(msg.chat.id, WELCOME_IMAGE, {
+      caption: "*Welcome to MeowChat*",
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [
+          joined
+            ? [{ text: "💬 Start Chat", callback_data: "start_chat" }]
+            : [
+                {
+                  text: "🔔 Join Channel",
+                  url: `https://t.me/${REQUIRED_CHANNEL.replace("@", "")}`
+                }
+              ]
+        ]
+      }
+    });
   });
 
   bot.on("callback_query", async q => {
-    const chatId = q.message.chat.id.toString();
-    if (q.data !== "start_chat") {
-      bot.answerCallbackQuery(q.id).catch(() => {});
-      return;
-    }
+    if (q.data !== "start_chat") return;
 
     if (!(await isUserJoined(q.from.id))) {
-      await bot.answerCallbackQuery(q.id, {
+      return bot.answerCallbackQuery(q.id, {
         text: "Join channel first",
         show_alert: true
       });
-      return;
     }
 
-    addUser(chatId, { name: q.from.first_name });
-    resetChatState(chatId);
-    setStatus(chatId, "searching");
-    addToQueue(chatId);
+    const id = q.message.chat.id.toString();
+    addUser(id, { name: q.from.first_name });
 
-    await resetStatusMessage(chatId);
-    await updateStatus(chatId, "🔍 Finding a partner...");
+    resetChatState(id);
+    setStatus(id, "searching");
+    addToQueue(id);
+
+    await updateStatus(id, "🔍 Finding partner...");
     await tryMatch();
     await bot.answerCallbackQuery(q.id);
   });
 
-  bot.onText(/\/skip/, async msg => {
-    const id = msg.chat.id.toString();
-    const u = getUser(id);
-    if (!u?.partner) return;
+  bot.onText(/\/skip/, msg =>
+    handleSkip(msg.chat.id.toString())
+  );
 
-    await autoEndOfflineUser(id);
-  });
-
-  bot.onText(/\/end/, async msg => {
-    const id = msg.chat.id.toString();
-    const u = getUser(id);
-    if (!u) return;
-
-    if (u.partner) await autoEndOfflineUser(u.partner);
-
-    resetChatState(id);
-    await bot.sendMessage(
-      id,
-      "Chat ended.\nPress *Start Chat* to continue.",
-      {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [[{ text: "💬 Start Chat", callback_data: "start_chat" }]]
-        }
-      }
-    );
-  });
+  bot.onText(/\/end/, msg =>
+    handleEnd(msg.chat.id.toString())
+  );
 
   // ======================================
-  // MESSAGE FORWARDING
-  // ======================================
-
+  // MESSAGE
   bot.on("message", async msg => {
     if (!msg.text || msg.text.startsWith("/")) return;
 
@@ -268,21 +257,19 @@ export function startTelegramBot() {
     const u = getUser(id);
     if (!u || u.status !== "connected") return;
 
-    const partner = u.partner;
-    startTyping(partner);
+    const p = u.partner;
+    startTyping(p);
 
-    setTimeout(async () => {
-      stopTyping(partner);
-      try {
-        const sent = await bot.sendMessage(
-          partner,
-          `💬 ${u.name}: ${msg.text}`
-        );
-        addChatMessage(partner, sent.message_id);
-      } catch {
-        await autoEndOfflineUser(partner);
-      }
-    }, 500);
+    try {
+      const sent = await bot.sendMessage(
+        p,
+        `💬 ${u.name}: ${msg.text}`
+      );
+      addChatMessage(p, sent.message_id);
+    } catch {
+      await handleOffline(p);
+    } finally {
+      stopTyping(p);
+    }
   });
 }
-//////////
