@@ -1,6 +1,6 @@
 // ======================================
 // src/index.js
-// Server Entry Point (FINAL + DEV SUPPORT)
+// Server Entry Point (FINAL + DEV + KEEP ALIVE)
 // ======================================
 
 import express from "express";
@@ -22,6 +22,8 @@ dotenv.config();
 const PORT = process.env.PORT || 5000;
 const CLIENT_URL = process.env.CLIENT_URL || "http://127.0.0.1:5173";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+const SELF_URL =
+  process.env.SELF_URL || `http://localhost:${PORT}`;
 
 // --------------------------------------
 // APP SETUP
@@ -56,12 +58,12 @@ const io = new Server(server, {
 socketHandler(io);
 
 // --------------------------------------
-// TELEGRAM BOT
+// TELEGRAM BOT (ONLY ONCE)
 // --------------------------------------
 startTelegramBot();
 
 // --------------------------------------
-// ADMIN AUTH MIDDLEWARE (PROD ONLY)
+// ADMIN AUTH (PROD)
 // --------------------------------------
 function adminAuth(req, res, next) {
   const auth = req.headers.authorization;
@@ -74,14 +76,18 @@ function adminAuth(req, res, next) {
 }
 
 // --------------------------------------
-// ✅ DEV ROUTE (NO AUTH - LOCAL ONLY)
+// DEV ROUTES (NO AUTH)
 // --------------------------------------
 app.get("/dev/stats", (req, res) => {
   res.json(getStats());
 });
 
+app.get("/dev/errors", (req, res) => {
+  res.json(getErrors());
+});
+
 // --------------------------------------
-// PROD ROUTES (DASHBOARD)
+// PROD ROUTES (AUTH)
 // --------------------------------------
 app.get("/api/stats", adminAuth, (req, res) => {
   res.json(getStats());
@@ -92,14 +98,10 @@ app.get("/api/errors", adminAuth, (req, res) => {
 });
 
 // --------------------------------------
-// HEALTH CHECK
+// HEALTH CHECK (RENDER)
 // --------------------------------------
 app.get("/", (req, res) => {
-  res.json({
-    status: "OK",
-    service: "Random Chat Backend",
-    time: new Date().toISOString()
-  });
+  res.send("OK");
 });
 
 // --------------------------------------
@@ -108,3 +110,15 @@ app.get("/", (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Backend running on port ${PORT}`);
 });
+
+// --------------------------------------
+// 🔁 KEEP ALIVE (EVERY 5 MINUTES)
+// --------------------------------------
+setInterval(async () => {
+  try {
+    const res = await fetch(SELF_URL);
+    console.log("🔁 Self-ping OK:", res.status);
+  } catch (err) {
+    console.error("❌ Self-ping failed:", err.message);
+  }
+}, 5 * 60 * 1000);
